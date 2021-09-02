@@ -21,6 +21,7 @@
 #include <joint_limits_interface/joint_limits_interface.h>
 #include <joint_limits_interface/joint_limits_rosparam.h>
 #include <joint_limits_interface/joint_limits_urdf.h>
+#include <std_msgs/Bool.h>
 
 // Library for access to the dynamixels
 #include <dynamixel/dynamixel.hpp>
@@ -38,7 +39,7 @@ namespace dynamixel {
         // Actuator's id type
         using id_t = typename Protocol::id_t;
 
-        DynamixelHardwareInterface(){};
+        DynamixelHardwareInterface();
         ~DynamixelHardwareInterface();
 
         /** Initialise the whole hardware interface.
@@ -83,6 +84,10 @@ namespace dynamixel {
             id_t id);
 
         void _enforce_limits(const ros::Duration& loop_period);
+        void updateSwitch(const std_msgs::Bool::ConstPtr& msg);
+
+        ros::NodeHandle nh;
+        ros::Subscriber torque_switch_sub_;
 
         // ROS's hardware interface instances
         hardware_interface::JointStateInterface _jnt_state_interface;
@@ -129,6 +134,14 @@ namespace dynamixel {
         // URDF model of the robot, for joint limits
         std::shared_ptr<urdf::Model> _urdf_model;
     };
+
+    template <class Protocol>
+    DynamixelHardwareInterface<Protocol>::DynamixelHardwareInterface()
+    {
+        torque_switch_sub_ 
+            = nh.subscribe("/dynamixel/enable_torque", 1, &DynamixelHardwareInterface<Protocol>::updateSwitch, this);
+    }
+
 
     template <class Protocol>
     DynamixelHardwareInterface<Protocol>::~DynamixelHardwareInterface()
@@ -836,6 +849,23 @@ namespace dynamixel {
         _jnt_vel_lim_interface.enforceLimits(loop_period);
         _jnt_pos_sat_interface.enforceLimits(loop_period);
         _jnt_vel_sat_interface.enforceLimits(loop_period);
+    }
+
+    template <class Protocol>
+    void DynamixelHardwareInterface<Protocol>::updateSwitch(const std_msgs::Bool::ConstPtr& msg)
+    {
+        try {
+            for (auto dynamixel_servo : _servos) {
+                dynamixel::StatusPacket<Protocol> status;
+                _dynamixel_controller.send(
+                    dynamixel_servo->set_torque_enable(static_cast<int>(msg->data)));
+            }
+        }
+        catch (dynamixel::errors::Error& e) {
+            ROS_ERROR_STREAM("Caught a Dynamixel exception while trying to "
+                << "switch torque:\n"
+                << e.msg());
+        }
     }
 } // namespace dynamixel
 
