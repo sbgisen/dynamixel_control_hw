@@ -138,7 +138,10 @@ namespace dynamixel {
             for (auto dynamixel_servo : _servos) {
                 dynamixel::StatusPacket<Protocol> status;
                 _dynamixel_controller.send(dynamixel_servo->set_torque_enable(0));
-                _dynamixel_controller.recv(status);
+
+                // only works for X-series with Protocol2
+                usleep(100);
+                _dynamixel_controller.send(dynamixel_servo->reboot());
             }
         }
         catch (dynamixel::errors::Error& e) {
