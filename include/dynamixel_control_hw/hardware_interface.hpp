@@ -138,7 +138,7 @@ namespace dynamixel {
     template <class Protocol>
     DynamixelHardwareInterface<Protocol>::DynamixelHardwareInterface()
     {
-        torque_switch_sub_ 
+        torque_switch_sub_
             = nh.subscribe("/dynamixel/enable_torque", 1, &DynamixelHardwareInterface<Protocol>::updateSwitch, this);
     }
 
@@ -859,6 +859,10 @@ namespace dynamixel {
                 dynamixel::StatusPacket<Protocol> status;
                 _dynamixel_controller.send(
                     dynamixel_servo->set_torque_enable(static_cast<int>(msg->data)));
+                _dynamixel_controller.recv(status);
+                if (!status.valid()) {
+                    ROS_ERROR_STREAM("Failed to change torque status\n");
+                }
             }
         }
         catch (dynamixel::errors::Error& e) {
