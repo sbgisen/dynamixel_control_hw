@@ -857,11 +857,16 @@ namespace dynamixel {
         try {
             for (auto dynamixel_servo : _servos) {
                 dynamixel::StatusPacket<Protocol> status;
-                _dynamixel_controller.send(
-                    dynamixel_servo->set_torque_enable(static_cast<int>(msg->data)));
-                _dynamixel_controller.recv(status);
-                if (!status.valid()) {
-                    ROS_ERROR_STREAM("Failed to change torque status\n");
+                int count = 0;
+                while (!status.valid()) {
+                    _dynamixel_controller.send(
+                        dynamixel_servo->set_torque_enable(static_cast<int>(msg->data)));
+                    _dynamixel_controller.recv(status);
+                    count++;
+                    if (count >= 10){
+                        ROS_ERROR_STREAM("Failed to change torque status\n");
+                        break;
+                    }
                 }
             }
         }
