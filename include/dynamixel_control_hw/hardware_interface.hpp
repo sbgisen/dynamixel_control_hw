@@ -21,7 +21,7 @@
 #include <joint_limits_interface/joint_limits_interface.h>
 #include <joint_limits_interface/joint_limits_rosparam.h>
 #include <joint_limits_interface/joint_limits_urdf.h>
-#include <std_msgs/Bool.h>
+#include <std_srvs/SetBool.h>
 
 // Library for access to the dynamixels
 #include <dynamixel/dynamixel.hpp>
@@ -84,10 +84,10 @@ namespace dynamixel {
             id_t id);
 
         void _enforce_limits(const ros::Duration& loop_period);
-        void updateSwitch(const std_msgs::Bool::ConstPtr& msg);
+        bool _set_torque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
 
         ros::NodeHandle nh;
-        ros::Subscriber torque_switch_sub_;
+        ros::ServiceServer torque_switch_service_;
 
         // ROS's hardware interface instances
         hardware_interface::JointStateInterface _jnt_state_interface;
@@ -138,8 +138,8 @@ namespace dynamixel {
     template <class Protocol>
     DynamixelHardwareInterface<Protocol>::DynamixelHardwareInterface()
     {
-        torque_switch_sub_
-            = nh.subscribe("/dynamixel/enable_torque", 1, &DynamixelHardwareInterface<Protocol>::updateSwitch, this);
+        torque_switch_service_
+            = nh.advertiseService("/dynamixel/enable_torque", &DynamixelHardwareInterface<Protocol>::_set_torque, this);
     }
 
 
@@ -852,28 +852,33 @@ namespace dynamixel {
     }
 
     template <class Protocol>
-    void DynamixelHardwareInterface<Protocol>::updateSwitch(const std_msgs::Bool::ConstPtr& msg)
+    bool DynamixelHardwareInterface<Protocol>::_set_torque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res)
     {
         try {
+            res.success = true;
             for (auto dynamixel_servo : _servos) {
                 dynamixel::StatusPacket<Protocol> status;
                 int count = 0;
                 while (!status.valid()) {
                     _dynamixel_controller.send(
-                        dynamixel_servo->set_torque_enable(static_cast<int>(msg->data)));
+                        dynamixel_servo->set_torque_enable(static_cast<int>(req.data)));
                     _dynamixel_controller.recv(status);
                     count++;
                     if (count >= 10){
                         ROS_ERROR_STREAM("Failed to change torque status\n");
+                        res.success = false;
                         break;
                     }
                 }
             }
+            return res.success;
         }
         catch (dynamixel::errors::Error& e) {
             ROS_ERROR_STREAM("Caught a Dynamixel exception while trying to "
                 << "switch torque:\n"
                 << e.msg());
+            res.success = false;
+            return false;
         }
     }
 } // namespace dynamixel
