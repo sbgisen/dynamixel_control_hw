@@ -122,6 +122,8 @@ namespace dynamixel {
         std::unordered_map<id_t, double> _dynamixel_max_speed;
         // Map for angle offsets (ID: correction in radians)
         std::unordered_map<id_t, double> _dynamixel_corrections;
+        // Map for gear ratio (ID: gear ratio)
+        std::unordered_map<id_t, double> _gear_ratio;
 
         // To get joint limits from the parameter server
         ros::NodeHandle _nh;
@@ -291,7 +293,7 @@ namespace dynamixel {
             }
             if (status.valid()) {
                 try {
-                    _joint_angles[i] = _servos[i]->parse_present_position_angle(status);
+                    _joint_angles[i] = _servos[i]->parse_present_position_angle(status) / _gear_ratio[_servos[i]->id()];
                 }
                 catch (dynamixel::errors::Error& e) {
                     ROS_ERROR_STREAM("Unpack exception while getting  "
@@ -304,7 +306,7 @@ namespace dynamixel {
                     invert_iterator
                     = _invert.find(_servos[i]->id());
                 if (invert_iterator != _invert.end()) {
-                    _joint_angles[i] = 2 * M_PI - _joint_angles[i];
+                    _joint_angles[i] = -_joint_angles[i];
                 }
 
                 // Apply angle correction to joint, if any
@@ -314,6 +316,16 @@ namespace dynamixel {
                 if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
                     _joint_angles[i] -= dynamixel_corrections_iterator->second;
                 }
+
+                // Normalize the command to the range of -π to π
+                _joint_angles[i] = fmod(_joint_angles[i], 2 * M_PI);
+                if (_joint_angles[i] < -M_PI) {
+                    _joint_angles[i] += 2 * M_PI;
+                }
+                else if (_joint_angles[i] > M_PI) {
+                    _joint_angles[i] -= 2 * M_PI;
+                }
+
             }
             else {
                 ROS_WARN_STREAM("Did not receive any data when reading "
@@ -334,7 +346,7 @@ namespace dynamixel {
             if (status_speed.valid()) {
                 try {
                     _joint_velocities[i]
-                        = _servos[i]->parse_joint_speed(status_speed);
+                        = _servos[i]->parse_joint_speed(status_speed) / _gear_ratio[_servos[i]->id()];
 
                     typename std::unordered_map<id_t, bool>::iterator
                         invert_iterator
@@ -382,12 +394,20 @@ namespace dynamixel {
                         command += dynamixel_corrections_iterator->second;
                     }
 
+                    command *= _gear_ratio[_servos[i]->id()];
+
                     // Invert the orientation, if configured
                     typename std::unordered_map<id_t, bool>::iterator
                         invert_iterator
                         = _invert.find(_servos[i]->id());
                     if (invert_iterator != _invert.end()) {
-                        command = 2 * M_PI - command;
+                        command = -command;
+                    }
+
+                    // Normalize the command to the range of 0 to 2π
+                    command = fmod(command, 2 * M_PI);
+                    if (command < 0) {
+                        command += 2 * M_PI;
                     }
 
                     ROS_DEBUG_STREAM("Setting position for joint "
@@ -398,6 +418,7 @@ namespace dynamixel {
                     _dynamixel_controller.recv(status);
                 }
                 else if (OperatingMode::wheel == mode) {
+                    command *= _gear_ratio[_servos[i]->id()];
                     // Invert the orientation, if configured
                     const short sign = 1; // formerly: _invert[_servos[i]->id()] ? -1 : 1;
                     typename std::unordered_map<id_t, bool>::iterator
@@ -504,6 +525,13 @@ namespace dynamixel {
 
                     if (it->second.hasMember("reverse")) {
                         _invert[id] = servos_param[it->first]["reverse"];
+                    }
+
+                    if (it->second.hasMember("gear_ratio")) {
+                        _gear_ratio[id] = servos_param[it->first]["gear_ratio"];
+                    }
+                    else {
+                        _gear_ratio[id] = 1.0;
                     }
                 }
             }
