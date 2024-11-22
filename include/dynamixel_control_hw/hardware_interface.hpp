@@ -83,6 +83,8 @@ namespace dynamixel {
             id_t id);
 
         void _enforce_limits(const ros::Duration& loop_period);
+        void _register_rising_offsets(const hardware_interface::JointHandle& cmd_handle,
+            id_t id);
 
         // ROS's hardware interface instances
         hardware_interface::JointStateInterface _jnt_state_interface;
@@ -122,6 +124,8 @@ namespace dynamixel {
         std::unordered_map<id_t, double> _dynamixel_max_speed;
         // Map for angle offsets (ID: correction in radians)
         std::unordered_map<id_t, double> _dynamixel_corrections;
+        // Map for rising offsets (ID: correction in radians)
+        std::unordered_map<id_t, double> _dynamixel_rising_offsets;
         // Map for gear ratio (ID: gear ratio)
         std::unordered_map<id_t, double> _gear_ratio;
 
@@ -161,7 +165,7 @@ namespace dynamixel {
         // Search for the servos declared bu the user, in the parameters
         if (!_get_ros_parameters(root_nh, robot_hw_nh) || !_find_servos())
             return false;
-
+        
         // declare all available actuators to the control manager, provided a
         // name has been given for them
         // also enable the torque output on the actuators (sort of power up)
@@ -229,6 +233,8 @@ namespace dynamixel {
                     if (OperatingMode::unknown != _c_mode_map[id]) {
                         // Set joint limits (saturation or soft for the joint)
                         _register_joint_limits(cmd_handle, id);
+                        // Set rising offsets
+                        _register_rising_offsets(cmd_handle, id);
                         // enable torque output on the servo and set its configuration
                         // including max speed
                         _enable_and_configure_servo(_servos[i], hardware_mode);
@@ -315,6 +321,7 @@ namespace dynamixel {
                     = _dynamixel_corrections.find(_servos[i]->id());
                 if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
                     _joint_angles[i] -= dynamixel_corrections_iterator->second;
+                    _joint_angles[i] -= _dynamixel_rising_offsets[_servos[i]->id()];
                 }
 
                 // Normalize the command to the range of -π to π
@@ -392,6 +399,7 @@ namespace dynamixel {
                         = _dynamixel_corrections.find(_servos[i]->id());
                     if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
                         command += dynamixel_corrections_iterator->second;
+                        command += _dynamixel_rising_offsets[_servos[i]->id()];
                     }
 
                     command *= _gear_ratio[_servos[i]->id()];
@@ -865,6 +873,35 @@ namespace dynamixel {
         _jnt_pos_sat_interface.enforceLimits(loop_period);
         _jnt_vel_sat_interface.enforceLimits(loop_period);
     }
+
+    template <class Protocol>
+    void DynamixelHardwareInterface<Protocol>::_register_rising_offsets(
+        const hardware_interface::JointHandle& cmd_handle,
+        id_t id)
+    {
+        // Get limits from URDF
+        if (_urdf_model == NULL) {
+            ROS_WARN_STREAM("No URDF model loaded, cannot be used to load joint"
+                            " limits");
+            return;
+        }
+
+        urdf::JointConstSharedPtr urdf_joint = _urdf_model->getJoint(_dynamixel_map[id]);
+        if (!urdf_joint) {
+            ROS_WARN_STREAM("Joint " << _dynamixel_map[id] << " not found in URDF.");
+            return;
+        }
+
+        if (urdf_joint->calibration && urdf_joint->calibration->rising) {
+            _dynamixel_rising_offsets[id] = *(urdf_joint->calibration->rising);
+            ROS_INFO_STREAM("Loaded rising offset for joint " << _dynamixel_map[id]
+                            << ": " << _dynamixel_rising_offsets[id] << " radians.");
+        } else {
+            _dynamixel_rising_offsets[id] = 0.0;
+            ROS_WARN_STREAM("No rising tag for joint " << _dynamixel_map[id]
+                            << ". Setting rising offset to 0.0.");
+        }
+    } // namespace dynamixel
 } // namespace dynamixel
 
 #endif
