@@ -320,8 +320,8 @@ namespace dynamixel {
                     dynamixel_corrections_iterator
                     = _dynamixel_corrections.find(_servos[i]->id());
                 if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
-                    _joint_angles[i] -= dynamixel_corrections_iterator->second;
-                    _joint_angles[i] -= _dynamixel_rising_offsets[_servos[i]->id()];
+                    _joint_angles[i] += dynamixel_corrections_iterator->second;
+                    _joint_angles[i] += _dynamixel_rising_offsets[_servos[i]->id()];
                 }
 
                 // Normalize the command to the range of -π to π
@@ -398,8 +398,8 @@ namespace dynamixel {
                         dynamixel_corrections_iterator
                         = _dynamixel_corrections.find(_servos[i]->id());
                     if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
-                        command += dynamixel_corrections_iterator->second;
-                        command += _dynamixel_rising_offsets[_servos[i]->id()];
+                        command -= dynamixel_corrections_iterator->second;
+                        command -= _dynamixel_rising_offsets[_servos[i]->id()];
                     }
 
                     command *= _gear_ratio[_servos[i]->id()];
