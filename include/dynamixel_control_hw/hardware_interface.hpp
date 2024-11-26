@@ -321,7 +321,12 @@ namespace dynamixel {
                     = _dynamixel_corrections.find(_servos[i]->id());
                 if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
                     _joint_angles[i] += dynamixel_corrections_iterator->second;
-                    _joint_angles[i] += _dynamixel_rising_offsets[_servos[i]->id()];
+                }
+                typename std::unordered_map<id_t, double>::iterator
+                    dynamixel_rising_offsets_iterator
+                    = _dynamixel_rising_offsets.find(_servos[i]->id());
+                if (dynamixel_rising_offsets_iterator != _dynamixel_rising_offsets.end()) {
+                    _joint_angles[i] += dynamixel_rising_offsets_iterator->second;
                 }
 
                 // Normalize the command to the range of -π to π
@@ -399,8 +404,13 @@ namespace dynamixel {
                         = _dynamixel_corrections.find(_servos[i]->id());
                     if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
                         command -= dynamixel_corrections_iterator->second;
-                        command -= _dynamixel_rising_offsets[_servos[i]->id()];
                     }
+                    typename std::unordered_map<id_t, double>::iterator
+                        dynamixel_rising_offsets_iterator
+                        = _dynamixel_rising_offsets.find(_servos[i]->id());
+                    if (dynamixel_rising_offsets_iterator != _dynamixel_rising_offsets.end()) {
+                        command -= dynamixel_rising_offsets_iterator->second;
+                    }                    
 
                     command *= _gear_ratio[_servos[i]->id()];
 
