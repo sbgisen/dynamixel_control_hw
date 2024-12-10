@@ -215,7 +215,7 @@ namespace dynamixel {
                     hardware_interface::JointHandle cmd_handle(
                         _jnt_state_interface.getHandle(dynamixel_iterator->second),
                         &_joint_commands[i]);
-                    if (OperatingMode::joint == hardware_mode) {
+                    if (OperatingMode::joint == hardware_mode || OperatingMode::multi_turn == hardware_mode) {
                         _jnt_pos_interface.registerHandle(cmd_handle);
                     }
                     else if (OperatingMode::wheel == hardware_mode) {
@@ -272,7 +272,7 @@ namespace dynamixel {
 
         for (unsigned i = 0; i < _servos.size(); i++) {
             OperatingMode mode = _c_mode_map[_servos[i]->id()];
-            if (OperatingMode::joint == mode)
+            if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode)
                 _joint_commands[i] = _joint_angles[i];
             else if (OperatingMode::wheel == mode)
                 _joint_commands[i] = 0;
@@ -330,12 +330,15 @@ namespace dynamixel {
                 }
 
                 // Normalize the command to the range of -π to π
-                _joint_angles[i] = fmod(_joint_angles[i], 2 * M_PI);
-                if (_joint_angles[i] < -M_PI) {
-                    _joint_angles[i] += 2 * M_PI;
-                }
-                else if (_joint_angles[i] > M_PI) {
-                    _joint_angles[i] -= 2 * M_PI;
+                if (_c_mode_map[_servos[i]->id()] != OperatingMode::multi_turn) {
+                    ROS_INFO_THROTTLE(1, "Joint %s position before normalization: %f", _dynamixel_map[_servos[i]->id()].c_str(), _joint_angles[i]);
+                    _joint_angles[i] = fmod(_joint_angles[i], 2 * M_PI);
+                    if (_joint_angles[i] < -M_PI) {
+                        _joint_angles[i] += 2 * M_PI;
+                    }
+                    else if (_joint_angles[i] > M_PI) {
+                        _joint_angles[i] -= 2 * M_PI;
+                    }
                 }
 
             }
@@ -398,7 +401,7 @@ namespace dynamixel {
                 double command = _joint_commands[i];
 
                 OperatingMode mode = _c_mode_map[_servos[i]->id()];
-                if (OperatingMode::joint == mode) {
+                if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode) {
                     typename std::unordered_map<id_t, double>::iterator
                         dynamixel_corrections_iterator
                         = _dynamixel_corrections.find(_servos[i]->id());
@@ -423,16 +426,22 @@ namespace dynamixel {
                     }
 
                     // Normalize the command to the range of 0 to 2π
-                    command = fmod(command, 2 * M_PI);
-                    if (command < 0) {
-                        command += 2 * M_PI;
+                    if (_c_mode_map[_servos[i]->id()] != OperatingMode::multi_turn) {
+                        command = fmod(command, 2 * M_PI);
+                        if (command < 0) {
+                            command += 2 * M_PI;
+                        }
                     }
 
                     ROS_DEBUG_STREAM("Setting position for joint "
                         << _dynamixel_map[_servos[i]->id()] << " to " << command
                         << " rad.");
-                    _dynamixel_controller.send(
-                        _servos[i]->reg_goal_position_angle(command));
+                    if (OperatingMode::joint == mode) {
+                        _dynamixel_controller.send(_servos[i]->reg_goal_position_angle(command));
+                    }
+                    else if (OperatingMode::multi_turn == mode) {
+                        _dynamixel_controller.send(_servos[i]->reg_multi_turn_goal_position_angle(command));
+                    }
                     _dynamixel_controller.recv(status);
                 }
                 else if (OperatingMode::wheel == mode) {
@@ -604,6 +613,8 @@ namespace dynamixel {
             mode = dynamixel::OperatingMode::wheel;
         else if ("position" == mode_string)
             mode = dynamixel::OperatingMode::joint;
+        else if ("extended_position")
+            mode = dynamixel::OperatingMode::multi_turn;
         else {
             mode = dynamixel::OperatingMode::unknown;
             ROS_ERROR_STREAM("The command mode " << mode_string
@@ -726,7 +737,7 @@ namespace dynamixel {
                 dynamixel_max_speed_iterator
                 = _dynamixel_max_speed.find(servo->id());
             if (dynamixel_max_speed_iterator != _dynamixel_max_speed.end()) {
-                if (OperatingMode::joint == mode) {
+                if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode) {
                     ROS_DEBUG_STREAM("Setting velocity limit of servo "
                         << _dynamixel_map[servo->id()] << " to "
                         << dynamixel_max_speed_iterator->second << " rad/s.");
@@ -741,7 +752,7 @@ namespace dynamixel {
                         << "servos in position mode. Ignoring the speed limit.");
                 }
             }
-            else if (OperatingMode::joint == mode) {
+            else if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode) {
                 ROS_DEBUG_STREAM("Resetting velocity limit of servo "
                     << _dynamixel_map[servo->id()] << ".");
                 _dynamixel_controller.send(servo->set_moving_speed_angle(0));
@@ -837,7 +848,7 @@ namespace dynamixel {
         // Save the velocity limit for later if the joint is in position mode
         // it is going to be sent to the servo-motor which will enforce it.
         if (joint_limits.has_velocity_limits
-            && OperatingMode::joint == _c_mode_map[id]) {
+            && OperatingMode::joint == _c_mode_map[id] || OperatingMode::multi_turn == _c_mode_map[id]) {
             _dynamixel_max_speed[id] = joint_limits.max_velocity;
         }
 
@@ -845,7 +856,7 @@ namespace dynamixel {
         {
             ROS_DEBUG_STREAM("Using soft saturation limits");
 
-            if (OperatingMode::joint == _c_mode_map[id]) {
+            if (OperatingMode::joint == _c_mode_map[id] || OperatingMode::multi_turn == _c_mode_map[id]) {
                 const joint_limits_interface::PositionJointSoftLimitsHandle
                     soft_handle_position(
                         cmd_handle, joint_limits, soft_limits);
@@ -861,7 +872,7 @@ namespace dynamixel {
         else if (has_joint_limits) // Use saturation limits
         {
             ROS_DEBUG_STREAM("Using saturation limits (not soft limits)");
-            if (OperatingMode::joint == _c_mode_map[id]) {
+            if (OperatingMode::joint == _c_mode_map[id] || OperatingMode::multi_turn == _c_mode_map[id]) {
                 const joint_limits_interface::PositionJointSaturationHandle
                     sat_handle_position(cmd_handle, joint_limits);
                 _jnt_pos_sat_interface.registerHandle(sat_handle_position);
