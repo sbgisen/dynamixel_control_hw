@@ -33,6 +33,7 @@ dynamixel_control:
       max-speed: 4 # in rad/s
       # this actuator is set in reverse mode for the speed and position
       reverse: true
+      gear_ratio: 1.0
   # default mode
   default_command_interface: position
 
