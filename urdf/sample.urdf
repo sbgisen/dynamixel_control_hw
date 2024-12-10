@@ -40,12 +40,12 @@
     <calibration rising="0.80"/>
 
     <!-- Joint limits -->
-    <limit lower="-3.1415" upper="3.1415" velocity="10" effort="100"/>
+    <limit lower="-31.415" upper="31.415" velocity="10" effort="100"/>
     <!-- Soft limits -->
     <safety_controller k_position="3"
                     k_velocity="1000"
-                    soft_lower_limit="-3.1415"
-                    soft_upper_limit="3.1415" />
+                    soft_lower_limit="-31.415"
+                    soft_upper_limit="31.415" />
   </joint>
 
   <joint name="arm_joint_2" type="revolute">
