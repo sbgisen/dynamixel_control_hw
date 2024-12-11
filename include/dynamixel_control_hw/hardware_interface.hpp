@@ -144,10 +144,6 @@ namespace dynamixel {
             for (auto dynamixel_servo : _servos) {
                 dynamixel::StatusPacket<Protocol> status;
                 _dynamixel_controller.send(dynamixel_servo->set_torque_enable(0));
-
-                // only works for X-series with Protocol2
-                usleep(100);
-                _dynamixel_controller.send(dynamixel_servo->reboot());
             }
         }
         catch (dynamixel::errors::Error& e) {
@@ -730,6 +726,28 @@ namespace dynamixel {
             ROS_DEBUG_STREAM("Enabling servo " << servo->id());
             _dynamixel_controller.send(servo->set_torque_enable(1));
             _dynamixel_controller.recv(status);
+            if (!status.valid())
+            {
+                // only works for X-series with Protocol2
+                usleep(100);
+                ROS_WARN_STREAM("Could not enable servo. Trying to reboot it.");
+                _dynamixel_controller.send(servo->reboot());
+                _dynamixel_controller.recv(status);
+                if (!status.valid())
+                {
+                    ROS_ERROR_STREAM("Could not reboot servo.");
+                    return;
+                }
+                usleep(100);
+                ROS_WARN_STREAM("Reenabling servo " << servo->id());
+                _dynamixel_controller.send(servo->set_torque_enable(1));
+                _dynamixel_controller.recv(status);
+                if (!status.valid())
+                {
+                    ROS_ERROR_STREAM("Could not enable servo.");
+                    return;
+                }
+            }
 
             // Set max speed for actuators in position mode
 
