@@ -83,6 +83,8 @@ namespace dynamixel {
             id_t id);
 
         void _enforce_limits(const ros::Duration& loop_period);
+        void _register_rising_offsets(const hardware_interface::JointHandle& cmd_handle,
+            id_t id);
 
         // ROS's hardware interface instances
         hardware_interface::JointStateInterface _jnt_state_interface;
@@ -122,6 +124,10 @@ namespace dynamixel {
         std::unordered_map<id_t, double> _dynamixel_max_speed;
         // Map for angle offsets (ID: correction in radians)
         std::unordered_map<id_t, double> _dynamixel_corrections;
+        // Map for rising offsets (ID: correction in radians)
+        std::unordered_map<id_t, double> _dynamixel_rising_offsets;
+        // Map for gear ratio (ID: gear ratio)
+        std::unordered_map<id_t, double> _gear_ratio;
 
         // To get joint limits from the parameter server
         ros::NodeHandle _nh;
@@ -138,10 +144,6 @@ namespace dynamixel {
             for (auto dynamixel_servo : _servos) {
                 dynamixel::StatusPacket<Protocol> status;
                 _dynamixel_controller.send(dynamixel_servo->set_torque_enable(0));
-
-                // only works for X-series with Protocol2
-                usleep(100);
-                _dynamixel_controller.send(dynamixel_servo->reboot());
             }
         }
         catch (dynamixel::errors::Error& e) {
@@ -159,7 +161,7 @@ namespace dynamixel {
         // Search for the servos declared bu the user, in the parameters
         if (!_get_ros_parameters(root_nh, robot_hw_nh) || !_find_servos())
             return false;
-
+        
         // declare all available actuators to the control manager, provided a
         // name has been given for them
         // also enable the torque output on the actuators (sort of power up)
@@ -209,7 +211,7 @@ namespace dynamixel {
                     hardware_interface::JointHandle cmd_handle(
                         _jnt_state_interface.getHandle(dynamixel_iterator->second),
                         &_joint_commands[i]);
-                    if (OperatingMode::joint == hardware_mode) {
+                    if (OperatingMode::joint == hardware_mode || OperatingMode::multi_turn == hardware_mode) {
                         _jnt_pos_interface.registerHandle(cmd_handle);
                     }
                     else if (OperatingMode::wheel == hardware_mode) {
@@ -227,6 +229,8 @@ namespace dynamixel {
                     if (OperatingMode::unknown != _c_mode_map[id]) {
                         // Set joint limits (saturation or soft for the joint)
                         _register_joint_limits(cmd_handle, id);
+                        // Set rising offsets
+                        _register_rising_offsets(cmd_handle, id);
                         // enable torque output on the servo and set its configuration
                         // including max speed
                         _enable_and_configure_servo(_servos[i], hardware_mode);
@@ -264,7 +268,7 @@ namespace dynamixel {
 
         for (unsigned i = 0; i < _servos.size(); i++) {
             OperatingMode mode = _c_mode_map[_servos[i]->id()];
-            if (OperatingMode::joint == mode)
+            if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode)
                 _joint_commands[i] = _joint_angles[i];
             else if (OperatingMode::wheel == mode)
                 _joint_commands[i] = 0;
@@ -291,7 +295,7 @@ namespace dynamixel {
             }
             if (status.valid()) {
                 try {
-                    _joint_angles[i] = _servos[i]->parse_present_position_angle(status);
+                    _joint_angles[i] = _servos[i]->parse_present_position_angle(status) / _gear_ratio[_servos[i]->id()];
                 }
                 catch (dynamixel::errors::Error& e) {
                     ROS_ERROR_STREAM("Unpack exception while getting  "
@@ -304,7 +308,7 @@ namespace dynamixel {
                     invert_iterator
                     = _invert.find(_servos[i]->id());
                 if (invert_iterator != _invert.end()) {
-                    _joint_angles[i] = 2 * M_PI - _joint_angles[i];
+                    _joint_angles[i] = -_joint_angles[i];
                 }
 
                 // Apply angle correction to joint, if any
@@ -312,8 +316,27 @@ namespace dynamixel {
                     dynamixel_corrections_iterator
                     = _dynamixel_corrections.find(_servos[i]->id());
                 if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
-                    _joint_angles[i] -= dynamixel_corrections_iterator->second;
+                    _joint_angles[i] += dynamixel_corrections_iterator->second;
                 }
+                typename std::unordered_map<id_t, double>::iterator
+                    dynamixel_rising_offsets_iterator
+                    = _dynamixel_rising_offsets.find(_servos[i]->id());
+                if (dynamixel_rising_offsets_iterator != _dynamixel_rising_offsets.end()) {
+                    _joint_angles[i] += dynamixel_rising_offsets_iterator->second;
+                }
+
+                // Normalize the command to the range of -π to π
+                if (_c_mode_map[_servos[i]->id()] != OperatingMode::multi_turn) {
+                    ROS_INFO_THROTTLE(1, "Joint %s position before normalization: %f", _dynamixel_map[_servos[i]->id()].c_str(), _joint_angles[i]);
+                    _joint_angles[i] = fmod(_joint_angles[i], 2 * M_PI);
+                    if (_joint_angles[i] < -M_PI) {
+                        _joint_angles[i] += 2 * M_PI;
+                    }
+                    else if (_joint_angles[i] > M_PI) {
+                        _joint_angles[i] -= 2 * M_PI;
+                    }
+                }
+
             }
             else {
                 ROS_WARN_STREAM("Did not receive any data when reading "
@@ -334,7 +357,7 @@ namespace dynamixel {
             if (status_speed.valid()) {
                 try {
                     _joint_velocities[i]
-                        = _servos[i]->parse_joint_speed(status_speed);
+                        = _servos[i]->parse_joint_speed(status_speed) / _gear_ratio[_servos[i]->id()];
 
                     typename std::unordered_map<id_t, bool>::iterator
                         invert_iterator
@@ -374,30 +397,51 @@ namespace dynamixel {
                 double command = _joint_commands[i];
 
                 OperatingMode mode = _c_mode_map[_servos[i]->id()];
-                if (OperatingMode::joint == mode) {
+                if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode) {
                     typename std::unordered_map<id_t, double>::iterator
                         dynamixel_corrections_iterator
                         = _dynamixel_corrections.find(_servos[i]->id());
                     if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
-                        command += dynamixel_corrections_iterator->second;
+                        command -= dynamixel_corrections_iterator->second;
                     }
+                    typename std::unordered_map<id_t, double>::iterator
+                        dynamixel_rising_offsets_iterator
+                        = _dynamixel_rising_offsets.find(_servos[i]->id());
+                    if (dynamixel_rising_offsets_iterator != _dynamixel_rising_offsets.end()) {
+                        command -= dynamixel_rising_offsets_iterator->second;
+                    }                    
+
+                    command *= _gear_ratio[_servos[i]->id()];
 
                     // Invert the orientation, if configured
                     typename std::unordered_map<id_t, bool>::iterator
                         invert_iterator
                         = _invert.find(_servos[i]->id());
                     if (invert_iterator != _invert.end()) {
-                        command = 2 * M_PI - command;
+                        command = -command;
+                    }
+
+                    // Normalize the command to the range of 0 to 2π
+                    if (_c_mode_map[_servos[i]->id()] != OperatingMode::multi_turn) {
+                        command = fmod(command, 2 * M_PI);
+                        if (command < 0) {
+                            command += 2 * M_PI;
+                        }
                     }
 
                     ROS_DEBUG_STREAM("Setting position for joint "
                         << _dynamixel_map[_servos[i]->id()] << " to " << command
                         << " rad.");
-                    _dynamixel_controller.send(
-                        _servos[i]->reg_goal_position_angle(command));
+                    if (OperatingMode::joint == mode) {
+                        _dynamixel_controller.send(_servos[i]->reg_goal_position_angle(command));
+                    }
+                    else if (OperatingMode::multi_turn == mode) {
+                        _dynamixel_controller.send(_servos[i]->reg_multi_turn_goal_position_angle(command));
+                    }
                     _dynamixel_controller.recv(status);
                 }
                 else if (OperatingMode::wheel == mode) {
+                    command *= _gear_ratio[_servos[i]->id()];
                     // Invert the orientation, if configured
                     const short sign = 1; // formerly: _invert[_servos[i]->id()] ? -1 : 1;
                     typename std::unordered_map<id_t, bool>::iterator
@@ -505,6 +549,13 @@ namespace dynamixel {
                     if (it->second.hasMember("reverse")) {
                         _invert[id] = servos_param[it->first]["reverse"];
                     }
+
+                    if (it->second.hasMember("gear_ratio")) {
+                        _gear_ratio[id] = servos_param[it->first]["gear_ratio"];
+                    }
+                    else {
+                        _gear_ratio[id] = 1.0;
+                    }
                 }
             }
             catch (XmlRpc::XmlRpcException& e) {
@@ -558,6 +609,8 @@ namespace dynamixel {
             mode = dynamixel::OperatingMode::wheel;
         else if ("position" == mode_string)
             mode = dynamixel::OperatingMode::joint;
+        else if ("extended_position")
+            mode = dynamixel::OperatingMode::multi_turn;
         else {
             mode = dynamixel::OperatingMode::unknown;
             ROS_ERROR_STREAM("The command mode " << mode_string
@@ -673,6 +726,28 @@ namespace dynamixel {
             ROS_DEBUG_STREAM("Enabling servo " << servo->id());
             _dynamixel_controller.send(servo->set_torque_enable(1));
             _dynamixel_controller.recv(status);
+            if (!status.valid())
+            {
+                // only works for X-series with Protocol2
+                usleep(100);
+                ROS_WARN_STREAM("Could not enable servo. Trying to reboot it.");
+                _dynamixel_controller.send(servo->reboot());
+                _dynamixel_controller.recv(status);
+                if (!status.valid())
+                {
+                    ROS_ERROR_STREAM("Could not reboot servo.");
+                    return;
+                }
+                usleep(100);
+                ROS_WARN_STREAM("Reenabling servo " << servo->id());
+                _dynamixel_controller.send(servo->set_torque_enable(1));
+                _dynamixel_controller.recv(status);
+                if (!status.valid())
+                {
+                    ROS_ERROR_STREAM("Could not enable servo.");
+                    return;
+                }
+            }
 
             // Set max speed for actuators in position mode
 
@@ -680,7 +755,7 @@ namespace dynamixel {
                 dynamixel_max_speed_iterator
                 = _dynamixel_max_speed.find(servo->id());
             if (dynamixel_max_speed_iterator != _dynamixel_max_speed.end()) {
-                if (OperatingMode::joint == mode) {
+                if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode) {
                     ROS_DEBUG_STREAM("Setting velocity limit of servo "
                         << _dynamixel_map[servo->id()] << " to "
                         << dynamixel_max_speed_iterator->second << " rad/s.");
@@ -695,7 +770,7 @@ namespace dynamixel {
                         << "servos in position mode. Ignoring the speed limit.");
                 }
             }
-            else if (OperatingMode::joint == mode) {
+            else if (OperatingMode::joint == mode || OperatingMode::multi_turn == mode) {
                 ROS_DEBUG_STREAM("Resetting velocity limit of servo "
                     << _dynamixel_map[servo->id()] << ".");
                 _dynamixel_controller.send(servo->set_moving_speed_angle(0));
@@ -791,7 +866,7 @@ namespace dynamixel {
         // Save the velocity limit for later if the joint is in position mode
         // it is going to be sent to the servo-motor which will enforce it.
         if (joint_limits.has_velocity_limits
-            && OperatingMode::joint == _c_mode_map[id]) {
+            && OperatingMode::joint == _c_mode_map[id] || OperatingMode::multi_turn == _c_mode_map[id]) {
             _dynamixel_max_speed[id] = joint_limits.max_velocity;
         }
 
@@ -799,7 +874,7 @@ namespace dynamixel {
         {
             ROS_DEBUG_STREAM("Using soft saturation limits");
 
-            if (OperatingMode::joint == _c_mode_map[id]) {
+            if (OperatingMode::joint == _c_mode_map[id] || OperatingMode::multi_turn == _c_mode_map[id]) {
                 const joint_limits_interface::PositionJointSoftLimitsHandle
                     soft_handle_position(
                         cmd_handle, joint_limits, soft_limits);
@@ -815,7 +890,7 @@ namespace dynamixel {
         else if (has_joint_limits) // Use saturation limits
         {
             ROS_DEBUG_STREAM("Using saturation limits (not soft limits)");
-            if (OperatingMode::joint == _c_mode_map[id]) {
+            if (OperatingMode::joint == _c_mode_map[id] || OperatingMode::multi_turn == _c_mode_map[id]) {
                 const joint_limits_interface::PositionJointSaturationHandle
                     sat_handle_position(cmd_handle, joint_limits);
                 _jnt_pos_sat_interface.registerHandle(sat_handle_position);
@@ -837,6 +912,35 @@ namespace dynamixel {
         _jnt_pos_sat_interface.enforceLimits(loop_period);
         _jnt_vel_sat_interface.enforceLimits(loop_period);
     }
+
+    template <class Protocol>
+    void DynamixelHardwareInterface<Protocol>::_register_rising_offsets(
+        const hardware_interface::JointHandle& cmd_handle,
+        id_t id)
+    {
+        // Get limits from URDF
+        if (_urdf_model == NULL) {
+            ROS_WARN_STREAM("No URDF model loaded, cannot be used to load joint"
+                            " limits");
+            return;
+        }
+
+        urdf::JointConstSharedPtr urdf_joint = _urdf_model->getJoint(_dynamixel_map[id]);
+        if (!urdf_joint) {
+            ROS_WARN_STREAM("Joint " << _dynamixel_map[id] << " not found in URDF.");
+            return;
+        }
+
+        if (urdf_joint->calibration && urdf_joint->calibration->rising) {
+            _dynamixel_rising_offsets[id] = *(urdf_joint->calibration->rising);
+            ROS_INFO_STREAM("Loaded rising offset for joint " << _dynamixel_map[id]
+                            << ": " << _dynamixel_rising_offsets[id] << " radians.");
+        } else {
+            _dynamixel_rising_offsets[id] = 0.0;
+            ROS_WARN_STREAM("No rising tag for joint " << _dynamixel_map[id]
+                            << ". Setting rising offset to 0.0.");
+        }
+    } // namespace dynamixel
 } // namespace dynamixel
 
 #endif
